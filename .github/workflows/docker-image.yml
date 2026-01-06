@@ -1,4 +1,4 @@
-name: Manual Build & Push Docker Image
+name: euserv Docker Image
 
 on:
   workflow_dispatch:
