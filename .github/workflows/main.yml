@@ -2,7 +2,7 @@ name: EUserv Daily Renew
 
 on:
   schedule:
-    - cron: '0 15 0 8 * ?' # 北京时间晚上8点（UTC 北京时区+8）
+    - cron: '0 0 8 * *' # 北京时间晚上8点（UTC 北京时区+8）
   workflow_dispatch:
 
 jobs:
