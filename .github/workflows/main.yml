@@ -1,0 +1,32 @@
+name: EUserv Daily Renew
+
+on:
+  schedule:
+    - cron: '0 12 * * *' # 北京时间晚上8点（UTC 北京时区+8）
+  workflow_dispatch:
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run EUserv renew script
+        env:
+          EUSERV_EMAIL: ${{ secrets.EUSERV_EMAIL }}
+          EUSERV_PASSWORD: ${{ secrets.EUSERV_PASSWORD }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+        run: python euser_renew.py
