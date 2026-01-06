@@ -1,4 +1,4 @@
-name: EUserv Daily Renew
+name: 德鸡自动续签
 
 on:
   schedule:
