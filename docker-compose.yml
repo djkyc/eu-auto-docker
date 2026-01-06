@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  euserv-renew:
+    build: .
+    container_name: euserv-renew
+    restart: unless-stopped
+    environment:
+      # === 必填配置 ===
+      - EUSERV_EMAIL=您的EUserv邮箱
+      - EUSERV_PASSWORD=您的EUserv密码
+      - EMAIL_PASS=您的邮箱授权码
+      
+      # === 可选配置：Telegram 通知 ===
+      - TG_BOT_TOKEN=您的TG_BOT_TOKEN
+      - TG_CHAT_ID=您的TG_CHAT_ID
+      
+      # === 定时任务配置 ===
+      # 每天早上8点运行 (北京时间)
+      - CRON_SCHEDULE=0 8 * * *
+      
+      # 首次启动时立即运行一次 (true/false)
+      - RUN_NOW=true
+    
+    # 可选：挂载日志到本地
+    volumes:
+      - ./logs:/var/log

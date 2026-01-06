@@ -1,0 +1,6 @@
+ddddocr
+Pillow
+requests
+beautifulsoup4
+lxml
+imap-tools
