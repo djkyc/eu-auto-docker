@@ -21,6 +21,13 @@ services:
       
       # 首次启动时立即运行一次 (true/false)
       - RUN_NOW=true
+      
+      # === 高级配置 ===
+      # 要跳过的合同ID，逗号分隔 (例如: 475282,123456)
+      # - SKIP_CONTRACTS=
+      
+      # 开启调试模式，显示详细日志 (true/false)
+      # - DEBUG=false
     
     # 可选：挂载日志到本地
     volumes:
