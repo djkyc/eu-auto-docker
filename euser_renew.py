@@ -24,12 +24,22 @@ from bs4 import BeautifulSoup
 from imap_tools import MailBox
 
 # 配置日志
+# DEBUG 模式：设置环境变量 DEBUG=true 开启详细日志
+DEBUG_MODE = os.getenv("DEBUG", "").lower() in ("true", "1", "yes")
+log_level = logging.DEBUG if DEBUG_MODE else logging.INFO
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level,
     format='%(asctime)s [%(threadName)s] %(levelname)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+# 要跳过的合同 ID 列表（通过环境变量 SKIP_CONTRACTS 配置，逗号分隔）
+# 例如: SKIP_CONTRACTS=475282,123456
+SKIP_CONTRACTS = [x.strip() for x in os.getenv("SKIP_CONTRACTS", "").split(",") if x.strip()]
+if SKIP_CONTRACTS:
+    logger.info(f"配置了跳过合同列表: {SKIP_CONTRACTS}")
 
 # 兼容新版 Pillow
 if not hasattr(Image, 'ANTIALIAS'):
@@ -211,9 +221,7 @@ def get_euserv_pin(email: str, email_password: str, imap_server: str, after_time
                 time.sleep(retry_interval)
                 
             with MailBox(imap_server).login(email, email_password) as mailbox:
-                # 收集所有符合条件的邮件，然后选择最新的
-                matched_emails = []
-                
+                # 倒序获取最新的邮件，找到第一封匹配的就返回
                 for msg in mailbox.fetch(limit=10, reverse=True):
                     # 检查是否是 EUserv 的邮件
                     if 'euserv' not in msg.from_.lower():
@@ -226,56 +234,33 @@ def get_euserv_pin(email: str, email_password: str, imap_server: str, after_time
                     if not is_target_type:
                         continue
                     
-                    # 如果指定了时间过滤，检查邮件时间（统一转为 UTC 时间戳比较）
-                    email_timestamp = None
-                    if msg.date:
+                    # 如果指定了时间过滤，检查邮件时间
+                    if after_time and msg.date:
                         email_dt = msg.date
                         if email_dt.tzinfo is None:
                             email_dt = email_dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
-                        email_timestamp = email_dt.timestamp()
                         
-                        if after_time:
-                            filter_dt = after_time
-                            if filter_dt.tzinfo is None:
-                                filter_dt = filter_dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
-                            
-                            # 允许 2 分钟的误差（防止服务器时间偏差）
-                            if email_timestamp < (filter_dt.timestamp() - 120):
-                                logger.debug(f"跳过旧邮件: {msg.subject} (邮件时间: {email_dt})")
-                                continue
+                        filter_dt = after_time
+                        if filter_dt.tzinfo is None:
+                            filter_dt = filter_dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                        
+                        # 允许 2 分钟的误差
+                        if email_dt.timestamp() < (filter_dt.timestamp() - 120):
+                            continue
                     
                     # 匹配正文中的 PIN
-                    pin = None
                     match = re.search(r'PIN:\s*\n?(\d{6})', msg.text) or re.search(r'PIN.*?(\d{6})', msg.text, re.DOTALL)
                     if match:
                         pin = match.group(1)
-                    else:
-                        # 备用匹配：找正文里的 6 位数字
-                        match_fallback = re.search(r'\b(\d{6})\b', msg.text)
-                        if match_fallback:
-                            pin = match_fallback.group(1)
+                        logger.info(f"✅ 提取到{type_name} PIN 码: {pin}")
+                        return pin
                     
-                    if pin:
-                        matched_emails.append({
-                            'pin': pin,
-                            'timestamp': email_timestamp or 0,
-                            'subject': msg.subject
-                        })
-                
-                # 如果找到了匹配的邮件，返回时间最新的那个
-                if matched_emails:
-                    # 打印所有找到的邮件（调试用）
-                    logger.info(f"📬 找到 {len(matched_emails)} 封匹配的{type_name}邮件:")
-                    for idx, em in enumerate(matched_emails):
-                        from datetime import datetime as dt
-                        ts_str = dt.fromtimestamp(em['timestamp']).strftime('%H:%M:%S') if em['timestamp'] else 'N/A'
-                        logger.info(f"  [{idx+1}] 时间: {ts_str}, PIN: {em['pin']}, 标题: {em['subject'][:40]}...")
-                    
-                    # 按时间戳降序排序，取最新的
-                    matched_emails.sort(key=lambda x: x['timestamp'], reverse=True)
-                    newest = matched_emails[0]
-                    logger.info(f"✅ 选择最新的 PIN 码: {newest['pin']}")
-                    return newest['pin']
+                    # 备用匹配
+                    match_fallback = re.search(r'\b(\d{6})\b', msg.text)
+                    if match_fallback:
+                        pin = match_fallback.group(1)
+                        logger.info(f"✅ 提取到{type_name} PIN 码: {pin}")
+                        return pin
                             
         except Exception as e:
             logger.warning(f"获取邮件尝试失败: {e}")
@@ -438,20 +423,28 @@ class EUserv:
                 if len(server_id) != 1:
                     continue
                 
+                # 获取整行文本，用于检测合同类型
+                row_text = tr.get_text().lower()
+                server_id_text = server_id[0].get_text().strip()
+                
+                # DEBUG: 打印整行文本
+                logger.debug(f"合同 {server_id_text} 行内容: {row_text[:200]}...")
+                
+                # 通过环境变量 SKIP_CONTRACTS 跳过指定的合同 ID
+                if server_id_text in SKIP_CONTRACTS:
+                    logger.info(f"⏭️ 跳过配置的合同: {server_id_text}")
+                    continue
+                
+                # 跳过 Sync & Share 类型的合同
+                if 'sync' in row_text and 'share' in row_text:
+                    logger.info(f"⏭️ 跳过 Sync & Share 合同: {server_id_text}")
+                    continue
+                
                 action_containers = tr.select('.td-z1-sp2-kc .kc2_order_action_container')
                 if not action_containers:
                     continue
                     
                 action_text = action_containers[0].get_text()
-                server_id_text = server_id[0].get_text().strip()
-                logger.debug(f"服务器 {server_id_text} 续期信息: {action_text[:100]}...")
-                
-                # 检查是否是失效/取消的合同，如果是则跳过
-                skip_keywords = ['cancelled', 'expired', 'terminated', 'canceled', 'inactive']
-                action_text_lower = action_text.lower()
-                if any(keyword in action_text_lower for keyword in skip_keywords):
-                    logger.info(f"⏭️ 跳过失效合同 {server_id_text}")
-                    continue
 
                 can_renew = action_text.find("Contract extension possible from") == -1
                 can_renew_date = ""
@@ -486,7 +479,7 @@ class EUserv:
         
         try:
             # 步骤1: 选择订单
-            logger.debug("步骤1: 选择订单...")
+            logger.info("步骤1: 选择订单...")
             data = {
                 'Submit': 'Extend contract',
                 'sess_id': self.sess_id,
@@ -495,24 +488,30 @@ class EUserv:
                 'show_contract_extension': '1',
                 'choose_order_subaction': 'show_contract_details'
             }
+            logger.debug(f"[步骤1] 请求参数: {data}")
             resp1 = self.session.post(url, headers=headers, data=data)
             resp1.raise_for_status()
+            logger.debug(f"[步骤1] 响应状态: {resp1.status_code}, 长度: {len(resp1.text)}")
             
             # 步骤2: 触发发送 PIN
-            logger.debug("步骤2: 触发发送 PIN...")
+            logger.info("步骤2: 触发发送 PIN...")
             # 记录当前时间，用于过滤旧邮件
             pin_request_time = datetime.now()
+            logger.debug(f"[步骤2] PIN 请求时间: {pin_request_time.strftime('%Y-%m-%d %H:%M:%S')}")
             data = {
                 'sess_id': self.sess_id,
                 'subaction': 'show_kc2_security_password_dialog',
                 'prefix': 'kc2_customer_contract_details_extend_contract_',
                 'type': '1'
             }
+            logger.debug(f"[步骤2] 请求参数: {data}")
             resp2 = self.session.post(url, headers=headers, data=data)
             resp2.raise_for_status()
+            logger.debug(f"[步骤2] 响应状态: {resp2.status_code}, 长度: {len(resp2.text)}")
+            logger.debug(f"[步骤2] 响应内容摘要: {resp2.text[:200]}...")
             
             # 步骤3: 获取 PIN（只获取新邮件）
-            logger.debug("步骤3: 等待并获取续期 PIN 码...")
+            logger.info("步骤3: 等待并获取续期 PIN 码...")
             time.sleep(5)  # 等待邮件发送
             pin = get_euserv_pin(
                 self.config.email,
@@ -527,7 +526,7 @@ class EUserv:
                 return False
         
             # 步骤4: 验证 PIN 获取 token
-            logger.debug("步骤4: 验证 PIN 获取 token...")
+            logger.info("步骤4: 验证 PIN 获取 token...")
             data = {
                 'sess_id': self.sess_id,
                 'auth': pin,
@@ -536,32 +535,38 @@ class EUserv:
                 'type': '1',
                 'ident': 'kc2_customer_contract_details_extend_contract_' + order_id
             }
+            logger.debug(f"[步骤4] 请求参数: {data}")
             
             resp3 = self.session.post(url, headers=headers, data=data)
             resp3.raise_for_status()
+            logger.debug(f"[步骤4] 响应状态: {resp3.status_code}")
+            logger.debug(f"[步骤4] 响应内容: {resp3.text[:300]}...")
 
             result = json.loads(resp3.text)
             if result.get('rs') != 'success':
                 logger.error(f"❌ 获取 token 失败: {result.get('rs', 'unknown')}")
                 if 'error' in result:
                     logger.error(f"错误信息: {result['error']}")
+                logger.debug(f"[步骤4] 完整响应: {resp3.text}")
                 return False
             
             token = result['token']['value']
-            logger.debug(f"✅ 获取到 token: {token[:20]}...")
+            logger.info(f"✅ 步骤4完成: 获取到 token")
+            logger.debug(f"[步骤4] Token: {token[:30]}...")
             time.sleep(3)
 
             # 步骤5: 获取续期确认对话框 (根据 JS 代码分析)
-            # 之前的直接 extend_contract_term 可能已经失效，需要先获取确认页面
-            logger.debug("步骤5: 获取续期确认对话框...")
+            logger.info("步骤5: 获取续期确认对话框...")
             data = {
                 'sess_id': self.sess_id,
                 'subaction': 'kc2_customer_contract_details_get_extend_contract_confirmation_dialog',
                 'token': token
             }
+            logger.debug(f"[步骤5] 请求参数: {data}")
       
             resp4 = self.session.post(url, headers=headers, data=data)
             resp4.raise_for_status()
+            logger.debug(f"[步骤5] 响应状态: {resp4.status_code}, 长度: {len(resp4.text)}")
             
             # --- 解析确认对话框，寻找下一步动作 ---
             try:
@@ -724,29 +729,25 @@ def process_account(account_config: AccountConfig, global_config: GlobalConfig) 
             result['success'] = True  # 登录成功，只是没有服务器
             return result
         
-        # 检查并续期（只续期第一个需要续期的合同）
-        renewed = False
+        # 检查并续期（只处理第一个需要续期的合同，无论成功失败都只处理这一个）
         for order_id, (can_renew, can_renew_date) in servers.items():
             logger.info(f"检查服务器: {order_id}")
             if can_renew:
-                if renewed:
-                    logger.info(f"⏭️ 跳过服务器 {order_id}（已有一个服务器续期成功）")
-                    continue
-                
-                logger.info(f"⏰ 服务器 {order_id} 可以续期")
+                logger.info(f"⏰ 服务器 {order_id} 可以续期，开始处理...")
                 if euserv.renew_server(order_id):
                     result['renew_results'].append({
                         'order_id': order_id,
                         'success': True,
                         'message': f"✅ 服务器 {order_id} 续期成功"
                     })
-                    renewed = True  # 标记已续期，后续合同不再处理
                 else:
                     result['renew_results'].append({
                         'order_id': order_id,
                         'success': False,
                         'message': f"❌ 服务器 {order_id} 续期失败"
                     })
+                # 无论成功失败，只处理这一个合同，立即停止
+                break
             else:
                 logger.info(f"✓ 服务器 {order_id} 暂不需要续期（可续期日期: {can_renew_date}）")
         
