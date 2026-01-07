@@ -211,7 +211,9 @@ def get_euserv_pin(email: str, email_password: str, imap_server: str, after_time
                 time.sleep(retry_interval)
                 
             with MailBox(imap_server).login(email, email_password) as mailbox:
-                # 倒序查找最近的几封邮件
+                # 收集所有符合条件的邮件，然后选择最新的
+                matched_emails = []
+                
                 for msg in mailbox.fetch(limit=10, reverse=True):
                     # 检查是否是 EUserv 的邮件
                     if 'euserv' not in msg.from_.lower():
@@ -225,40 +227,50 @@ def get_euserv_pin(email: str, email_password: str, imap_server: str, after_time
                         continue
                     
                     # 如果指定了时间过滤，检查邮件时间（统一转为 UTC 时间戳比较）
-                    if after_time and msg.date:
-                        # 1. 处理邮件时间
+                    email_timestamp = None
+                    if msg.date:
                         email_dt = msg.date
                         if email_dt.tzinfo is None:
-                            # 如果邮件时间没时区，假设它就是本地时间，转为带时区的
                             email_dt = email_dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                        email_timestamp = email_dt.timestamp()
                         
-                        # 2. 处理过滤时间 (after_time)
-                        # after_time 通常是 datetime.now()，可能带时区也可能不带
-                        filter_dt = after_time
-                        if filter_dt.tzinfo is None:
-                            filter_dt = filter_dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                        if after_time:
+                            filter_dt = after_time
+                            if filter_dt.tzinfo is None:
+                                filter_dt = filter_dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
                             
-                        # 3. 允许 2 分钟的误差（防止服务器时间偏差）
-                        # 统一转为时间戳比较，最稳妥
-                        if email_dt.timestamp() < (filter_dt.timestamp() - 120):
-                            logger.debug(f"跳过旧邮件: {msg.subject} (邮件: {email_dt}, 阈值: {filter_dt})")
-                            continue
-                    
-                    logger.debug(f"找到{type_name}邮件: {msg.subject}")
+                            # 允许 2 分钟的误差（防止服务器时间偏差）
+                            if email_timestamp < (filter_dt.timestamp() - 120):
+                                logger.debug(f"跳过旧邮件: {msg.subject} (邮件时间: {email_dt})")
+                                continue
                     
                     # 匹配正文中的 PIN
+                    pin = None
                     match = re.search(r'PIN:\s*\n?(\d{6})', msg.text) or re.search(r'PIN.*?(\d{6})', msg.text, re.DOTALL)
                     if match:
                         pin = match.group(1)
-                        logger.info(f"✅ 提取到{type_name} PIN 码: {pin}")
-                        return pin
+                    else:
+                        # 备用匹配：找正文里的 6 位数字
+                        match_fallback = re.search(r'\b(\d{6})\b', msg.text)
+                        if match_fallback:
+                            pin = match_fallback.group(1)
                     
-                    # 备用匹配：找正文里的 6 位数字
-                    match_fallback = re.search(r'\b(\d{6})\b', msg.text)
-                    if match_fallback:
-                        pin = match_fallback.group(1)
-                        logger.warning(f"⚠️ 备选匹配{type_name} PIN 码: {pin}")
-                        return pin
+                    if pin:
+                        matched_emails.append({
+                            'pin': pin,
+                            'timestamp': email_timestamp or 0,
+                            'subject': msg.subject
+                        })
+                
+                # 如果找到了匹配的邮件，返回时间最新的那个
+                if matched_emails:
+                    # 按时间戳降序排序，取最新的
+                    matched_emails.sort(key=lambda x: x['timestamp'], reverse=True)
+                    newest = matched_emails[0]
+                    logger.info(f"✅ 提取到{type_name} PIN 码: {newest['pin']} (来自: {newest['subject'][:30]}...)")
+                    if len(matched_emails) > 1:
+                        logger.debug(f"共找到 {len(matched_emails)} 封匹配邮件，使用最新的一封")
+                    return newest['pin']
                             
         except Exception as e:
             logger.warning(f"获取邮件尝试失败: {e}")
@@ -426,7 +438,15 @@ class EUserv:
                     continue
                     
                 action_text = action_containers[0].get_text()
-                logger.debug(f"续期信息: {action_text}")
+                server_id_text = server_id[0].get_text().strip()
+                logger.debug(f"服务器 {server_id_text} 续期信息: {action_text[:100]}...")
+                
+                # 检查是否是失效/取消的合同，如果是则跳过
+                skip_keywords = ['cancelled', 'expired', 'terminated', 'canceled', 'inactive']
+                action_text_lower = action_text.lower()
+                if any(keyword in action_text_lower for keyword in skip_keywords):
+                    logger.info(f"⏭️ 跳过失效合同 {server_id_text}")
+                    continue
 
                 can_renew = action_text.find("Contract extension possible from") == -1
                 can_renew_date = ""
@@ -438,7 +458,6 @@ class EUserv:
                         can_renew_date = match.group(0)
                         can_renew = datetime.today().date() >= datetime.strptime(can_renew_date, "%Y-%m-%d").date()
 
-                server_id_text = server_id[0].get_text().strip()
                 servers[server_id_text] = (can_renew, can_renew_date)
             
             logger.info(f"✅ 账号 {self.config.email} 找到 {len(servers)} 台服务器")
@@ -701,9 +720,15 @@ def process_account(account_config: AccountConfig, global_config: GlobalConfig) 
             return result
         
         # 检查并续期
+        renew_count = 0
         for order_id, (can_renew, can_renew_date) in servers.items():
             logger.info(f"检查服务器: {order_id}")
             if can_renew:
+                # 如果不是第一个需要续期的服务器，等待一段时间确保 PIN 邮件不会混淆
+                if renew_count > 0:
+                    logger.info(f"⏳ 等待 30 秒后处理下一个服务器...")
+                    time.sleep(30)
+                
                 logger.info(f"⏰ 服务器 {order_id} 可以续期")
                 if euserv.renew_server(order_id):
                     result['renew_results'].append({
@@ -711,6 +736,7 @@ def process_account(account_config: AccountConfig, global_config: GlobalConfig) 
                         'success': True,
                         'message': f"✅ 服务器 {order_id} 续期成功"
                     })
+                    renew_count += 1
                 else:
                     result['renew_results'].append({
                         'order_id': order_id,
