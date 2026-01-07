@@ -264,12 +264,17 @@ def get_euserv_pin(email: str, email_password: str, imap_server: str, after_time
                 
                 # 如果找到了匹配的邮件，返回时间最新的那个
                 if matched_emails:
+                    # 打印所有找到的邮件（调试用）
+                    logger.info(f"📬 找到 {len(matched_emails)} 封匹配的{type_name}邮件:")
+                    for idx, em in enumerate(matched_emails):
+                        from datetime import datetime as dt
+                        ts_str = dt.fromtimestamp(em['timestamp']).strftime('%H:%M:%S') if em['timestamp'] else 'N/A'
+                        logger.info(f"  [{idx+1}] 时间: {ts_str}, PIN: {em['pin']}, 标题: {em['subject'][:40]}...")
+                    
                     # 按时间戳降序排序，取最新的
                     matched_emails.sort(key=lambda x: x['timestamp'], reverse=True)
                     newest = matched_emails[0]
-                    logger.info(f"✅ 提取到{type_name} PIN 码: {newest['pin']} (来自: {newest['subject'][:30]}...)")
-                    if len(matched_emails) > 1:
-                        logger.debug(f"共找到 {len(matched_emails)} 封匹配邮件，使用最新的一封")
+                    logger.info(f"✅ 选择最新的 PIN 码: {newest['pin']}")
                     return newest['pin']
                             
         except Exception as e:
@@ -719,15 +724,14 @@ def process_account(account_config: AccountConfig, global_config: GlobalConfig) 
             result['success'] = True  # 登录成功，只是没有服务器
             return result
         
-        # 检查并续期
-        renew_count = 0
+        # 检查并续期（只续期第一个需要续期的合同）
+        renewed = False
         for order_id, (can_renew, can_renew_date) in servers.items():
             logger.info(f"检查服务器: {order_id}")
             if can_renew:
-                # 如果不是第一个需要续期的服务器，等待一段时间确保 PIN 邮件不会混淆
-                if renew_count > 0:
-                    logger.info(f"⏳ 等待 30 秒后处理下一个服务器...")
-                    time.sleep(30)
+                if renewed:
+                    logger.info(f"⏭️ 跳过服务器 {order_id}（已有一个服务器续期成功）")
+                    continue
                 
                 logger.info(f"⏰ 服务器 {order_id} 可以续期")
                 if euserv.renew_server(order_id):
@@ -736,7 +740,7 @@ def process_account(account_config: AccountConfig, global_config: GlobalConfig) 
                         'success': True,
                         'message': f"✅ 服务器 {order_id} 续期成功"
                     })
-                    renew_count += 1
+                    renewed = True  # 标记已续期，后续合同不再处理
                 else:
                     result['renew_results'].append({
                         'order_id': order_id,
