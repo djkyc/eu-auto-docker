@@ -1,4 +1,4 @@
-name: EUserv Daily Renew
+name: EUserv 续期 
 
 on:
   schedule:
