@@ -1,8 +1,8 @@
-name: 德鸡自动续签
+name: EUserv Daily Renew
 
 on:
   schedule:
-    - cron: '0 0 8 * *' # 北京时间晚上8点（UTC 北京时区+8）
+    - cron: '0 12 * * *' # 北京时间晚上8点（UTC 北京时区+8）
   workflow_dispatch:
 
 jobs:
@@ -29,4 +29,6 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          SKIP_CONTRACTS: ${{ secrets.SKIP_CONTRACTS }}
+          DEBUG: ${{ secrets.DEBUG }}
         run: python euser_renew.py
