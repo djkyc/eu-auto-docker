@@ -24,8 +24,13 @@ from bs4 import BeautifulSoup
 from imap_tools import MailBox
 
 # 配置日志
-# DEBUG 模式：设置环境变量 DEBUG=true 开启详细日志
-DEBUG_MODE = os.getenv("DEBUG", "").lower() in ("true", "1", "yes")
+# DEBUG 模式：
+#   - 不设置或 DEBUG=false: 普通模式（INFO级别日志）
+#   - DEBUG=true: 调试模式（DEBUG级别日志，不保存HTML）
+#   - DEBUG=html: 调试+HTML模式（DEBUG级别日志，保存HTML文件用于排查问题）
+_debug_env = os.getenv("DEBUG", "").lower()
+DEBUG_MODE = _debug_env in ("true", "1", "yes", "html")
+SAVE_HTML_MODE = _debug_env == "html"
 log_level = logging.DEBUG if DEBUG_MODE else logging.INFO
 
 logging.basicConfig(
@@ -583,9 +588,14 @@ class EUserv:
                 except:
                     dialog_html = resp4.text
                 
-                # 保存 HTML 以便分析（如果需要）
-                with open('/app/dialog_response.html', 'w', encoding='utf-8') as f:
-                    f.write(dialog_html)
+                # 保存 HTML 以便分析（仅在 DEBUG=html 模式下）
+                if SAVE_HTML_MODE:
+                    try:
+                        with open('dialog_response.html', 'w', encoding='utf-8') as f:
+                            f.write(dialog_html)
+                        logger.debug("已保存 dialog_response.html")
+                    except Exception as e:
+                        logger.warning(f"保存 dialog_response.html 失败: {e}")
                 
                 # 查找下一步的 subaction
                 # 优先级1: 从 hidden input 中查找
@@ -638,9 +648,14 @@ class EUserv:
                 resp5 = self.session.post(url, headers=headers, data=data_confirm)
                 resp5.raise_for_status()
                 
-                # 保存最终响应
-                with open('/app/final_response.html', 'w', encoding='utf-8') as f:
-                    f.write(resp5.text)
+                # 保存最终响应（仅在 DEBUG=html 模式下）
+                if SAVE_HTML_MODE:
+                    try:
+                        with open('final_response.html', 'w', encoding='utf-8') as f:
+                            f.write(resp5.text)
+                        logger.debug("已保存 final_response.html")
+                    except Exception as e:
+                        logger.warning(f"保存 final_response.html 失败: {e}")
 
                 # 检查最终结果
                 html_lower = resp5.text.lower()
