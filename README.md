@@ -28,4 +28,31 @@ euserv免费机需要每个月续期，本项目实现自动续期，支持githu
 
   以上配置完成后，等待定时执行就可以了，如果配置了tg信息运行后会收到通知
 
+---
+  -----------------------------------------------------------------
+ # 在 ARM64 OpenWrt 的青龙上部署，步骤和 x86 完全一样：
+  
+只要你是标准的 Docker 青龙容器，不论它装在 x86 还是软路由 ARM64 设备上，你只需要：
+
+1.进入 ARM64 设备的青龙容器终端： 跑系统命令装引擎：
+
+`
+bash
+apk add --no-cache tesseract-ocr tesseract-ocr-data-eng`
+
+2.青龙依赖管理添加 Python 包：
+
+`
+text
+Pillow requests beautifulsoup4 imap-tools pytesseract`
+
+
+3.在 extra.sh 里加一行持久化（防止重启丢失）：
+`
+bash
+apk add --no-cache tesseract-ocr tesseract-ocr-data-eng 2>/dev/null || true`
+
+  后面加变量操作一样！
+
                  
+
