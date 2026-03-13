@@ -22,7 +22,7 @@ euserv免费机需要每个月续期，本项目实现自动续期，支持githu
 | `TG_BOT_TOKEN`    | **否**   | 配置tg账号的token，非必须，不想收通知可以不配置                                              |
 | `TG_CHAT_ID`      | **否**   | 配置tg账号的userid，非必须，不想收通知可以不配置                                                                        |
 | `SKIP_CONTRACTS`  | **否**   | 要跳过的合同ID，逗号分隔（如 `475282,123456`） |
-| `DEBUG`           | **否**   | 调试模式：`true` 开启详细日志，`html` 开启日志+保存HTML调试文件（仅Docker使用） |
+| `DEBUG`           | **否**   | 调试模式：`true` 开启详细日志，`html` 开启日志+保存HTML调试文件（仅Docker使用）未设置或为 false 时，日志级别为 INFO，不保存 HTML |
 
 ## 4.运行
 
@@ -102,7 +102,7 @@ TG_BOT_TOKEN	❌	Telegram Bot Token（从 @BotFather 获取）
 TG_CHAT_ID	❌	Telegram 接收人的 Chat ID（可通过 @userinfobot 获取）
 WECHAT_API_URL	❌	微信推送 API 地址（需支持 POST 表单）
 WECHAT_AUTH_TOKEN	❌	微信推送认证令牌（将放在请求体 token 字段）
-DEBUG	❌	true 输出 DEBUG 日志；html 额外保存 HTML 文件到容器内
+DEBUG	❌	true 输出 DEBUG 日志；html 额外保存 HTML 文件到容器内；未设置或为 false 时，日志级别为 INFO，不保存 HTML
 HTTP_PROXY/HTTPS_PROXY	❌	代理地址（如果网络需要）
 注意：EMAIL_PASS 视邮箱服务商而定：
 
@@ -208,4 +208,5 @@ MIT License © 2025 [你的名字]
 text
 
                  
+
 
