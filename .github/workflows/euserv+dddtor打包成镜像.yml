@@ -7,6 +7,12 @@ on:
   release:
     types: [ published ]         # 当发布 Release 时触发
   workflow_dispatch:              # 允许手动触发
+    inputs:
+      image_name:
+        description: '自定义镜像名称'
+        required: false
+        default: 'euserv-renewer'
+        type: string
 
 jobs:
   build:
@@ -36,7 +42,8 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/euserv-renewer
+          # 镜像名称：ghcr.io/所有者/自定义名称（支持手动输入，默认 euserv-renewer）
+          images: ghcr.io/${{ github.repository_owner }}/${{ github.event.inputs.image_name || 'euserv-ddddocr' }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
