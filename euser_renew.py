@@ -929,21 +929,23 @@ def send_telegram(message: str, config: GlobalConfig):
 
 
 def send_wechat(message: str, config: GlobalConfig):
-    """发送微信推送（表单格式）"""
+    """发送微信推送（表单格式，自动移除HTML标签）"""
     if not config.wechat_api_url or not config.wechat_auth_token:
         logger.debug("未配置微信推送，跳过")
         return
 
+    # 将HTML消息转换为纯文本（移除所有HTML标签）
+    plain_message = re.sub(r'<[^>]+>', '', message)
+
     # 准备表单数据
     data = {
         "title": "EUserv 续期通知",
-        "content": message,
+        "content": plain_message,
         "token": config.wechat_auth_token
     }
     logger.debug(f"微信推送请求数据: {data}")
 
     try:
-        # 使用 data= 而非 json=，自动使用表单格式
         response = requests.post(config.wechat_api_url, data=data, timeout=10)
         if response.status_code == 200:
             logger.info("✅ 微信推送发送成功")
@@ -1065,14 +1067,14 @@ def main():
     logger.info("处理结果汇总")
     logger.info("=" * 60)
     
-    message_parts = [f"🔄 EUserv 多账号续期报告\n"]
+    message_parts = [f"<b>🔄 EUserv 多账号续期报告</b>\n"]
     message_parts.append(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
     message_parts.append(f"处理账号数: {len(all_results)}\n")
     
     for result in all_results:
         email = result['email']
         logger.info(f"\n账号: {email}")
-        message_parts.append(f"\n📧 账号: {email}")
+        message_parts.append(f"\n<b>📧 账号: {email}</b>")
         
         if not result['success']:
             error_msg = result.get('error', '未知错误')
@@ -1110,4 +1112,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
