@@ -2,14 +2,11 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [ main ]
-    # 如果需要忽略某些文件，可以明确指定，但不建议忽略工作流自身
-    # paths-ignore:
-    #   - 'README.md'
-    tags: [ 'v*' ]
-  release:
-    types: [ published ]
-  workflow_dispatch:
+    branches: [ main ]                # 仅在推送到 main 分支时检查
+    paths:                            # 仅当以下路径模式匹配时才触发
+      - '**.py'                        # 所有 .py 文件（包括子目录）
+      - '**.sh'                         # 所有 .sh 文件（包括子目录）
+  workflow_dispatch:                   # 始终允许手动触发
     inputs:
       image_name:
         description: '自定义镜像名称'
@@ -45,13 +42,15 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/${{ github.event.inputs.image_name || 'euserv-tg-oem' }}
+          # 镜像名称：手动触发时使用输入值，否则使用默认值
+          images: ghcr.io/${{ github.repository_owner }}/${{ github.event.inputs.image_name || 'euserv-renewer' }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
+            # 仅在默认分支（如 main）上生成 latest 标签
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
       - name: Build and push
