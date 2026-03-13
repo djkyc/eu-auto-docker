@@ -1,4 +1,4 @@
-name: Build and Push Docker Image
+name: Build and Push Euserv Docker 镜像
 
 on:
   push:
