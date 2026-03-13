@@ -16,8 +16,8 @@ services:
       - TG_CHAT_ID=您的TG_CHAT_ID
       
       # === 定时任务配置 ===
-      # 每天早上8点运行 (北京时间)
-      - CRON_SCHEDULE=0 8 * * *
+      # 每10天运行一次 (每月1日、11日、21日早上8点)
+      - CRON_SCHEDULE=0 8 1,11,21 * *
       
       # 首次启动时立即运行一次 (true/false)
       - RUN_NOW=true

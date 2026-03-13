@@ -67,12 +67,13 @@ Single-file design with one main script:
 
 1. Login with CAPTCHA recognition (via ddddocr OCR)
 2. Handle PIN verification (fetched from email via IMAP)
-3. Get server/contract list (filtering out Sync & Share contracts)
-4. For each contract that can be renewed:
+3. **Confirm Customer Data page** (auto-parse and submit the form to unblock panel functions)
+4. Get server/contract list (filtering out Sync & Share contracts)
+5. For each contract that can be renewed:
    - Trigger renewal PIN email
    - Fetch new PIN from email (distinguishes login vs renewal PINs by subject)
    - Complete multi-step renewal form submission with token
-5. Send Telegram notification with results
+6. Send Telegram notification with results
 
 ## Email IMAP Support
 
