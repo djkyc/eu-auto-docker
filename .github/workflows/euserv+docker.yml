@@ -43,7 +43,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           # 镜像名称：手动触发时使用输入值，否则使用默认值
-          images: ghcr.io/${{ github.repository_owner }}/${{ github.event.inputs.image_name || 'euserv-renewer' }}
+          images: ghcr.io/${{ github.repository_owner }}/${{ github.event.inputs.image_name || 'euserv-tg-wx-diy' }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
