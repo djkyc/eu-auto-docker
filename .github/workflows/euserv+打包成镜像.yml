@@ -45,7 +45,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/${{ github.event.inputs.image_name || 'euserv-renewer-diy' }}
+          images: ghcr.io/${{ github.repository_owner }}/${{ github.event.inputs.image_name || 'euserv-tg-wx-diy' }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
