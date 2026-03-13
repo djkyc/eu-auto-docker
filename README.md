@@ -273,8 +273,11 @@ docker run --rm --env-file /mnt/usb/euserv/.env ghcr.io/djkyc/euserv-tg-wx-diy:l
 6️⃣ 权限检查
 确保 .env 文件可读（通常已是 644）：
 
+# HTTP_PROXY=http://192.168.2.80:7890国外vps要注释掉或删除这二个代理。如果是国内vps.哪就得个代理
+# HTTPS_PROXY=http://192.168.2.80:7890
 bash
 chmod 644 /mnt/usb/euserv/.env
 ✅ 验证
 查看容器日志：docker logs qinglong 确认容器启动正常。
+
 
