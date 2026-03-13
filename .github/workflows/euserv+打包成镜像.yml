@@ -1,12 +1,15 @@
+name: Build and Push Docker Image
+
 on:
   push:
     branches: [ main ]
-    paths-ignore:
-      - '.github/workflows/**'   # 忽略工作流文件的变化
-    tags: [ 'v*' ]               # 当推送版本标签时触发（如 v1.0.0）
+    # 如果需要忽略某些文件，可以明确指定，但不建议忽略工作流自身
+    # paths-ignore:
+       - 'README.md'
+    tags: [ 'v*' ]
   release:
-    types: [ published ]         # 当发布 Release 时触发
-  workflow_dispatch:              # 允许手动触发
+    types: [ published ]
+  workflow_dispatch:
     inputs:
       image_name:
         description: '自定义镜像名称'
@@ -19,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write             # 允许推送到 GitHub Container Registry
+      packages: write
 
     steps:
       - name: Checkout code
@@ -36,27 +39,26 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}  # GITHUB_TOKEN 自动可用
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels)
+      - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # 镜像名称：ghcr.io/所有者/自定义名称（支持手动输入，默认 euserv-renewer）
-          images: ghcr.io/${{ github.repository_owner }}/${{ github.event.inputs.image_name || 'euserv-oem' }}
+          images: ghcr.io/${{ github.repository_owner }}/${{ github.event.inputs.image_name || 'euserv-renewer-diy' }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
-      - name: Build and push Docker image
+      - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/amd64,linux/arm64   # 构建多架构镜像
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
