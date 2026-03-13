@@ -5,7 +5,7 @@ on:
     branches: [ main ]
     # 如果需要忽略某些文件，可以明确指定，但不建议忽略工作流自身
     # paths-ignore:
-       - 'README.md'
+    #   - 'README.md'
     tags: [ 'v*' ]
   release:
     types: [ published ]
