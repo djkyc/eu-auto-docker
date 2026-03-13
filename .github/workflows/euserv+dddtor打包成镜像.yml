@@ -1,4 +1,4 @@
-name: Build and Push Docker Image
+name: euserv+dddtor打包成镜像
 
 on:
   push:
