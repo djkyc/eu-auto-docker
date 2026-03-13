@@ -1,8 +1,8 @@
-name: euserv+dddtor打包成镜像
-
 on:
   push:
-    branches: [ main ]          # 当推送到 main 分支时触发
+    branches: [ main ]
+    paths-ignore:
+      - '.github/workflows/**'   # 忽略工作流文件的变化
     tags: [ 'v*' ]               # 当推送版本标签时触发（如 v1.0.0）
   release:
     types: [ published ]         # 当发布 Release 时触发
