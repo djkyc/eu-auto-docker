@@ -11,7 +11,7 @@ on:
       image_name:
         description: '自定义镜像名称'
         required: false
-        default: 'euserv-tg-wx'
+        default: 'euserv-renewer'
         type: string
 
 jobs:
