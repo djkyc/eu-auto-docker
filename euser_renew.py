@@ -597,19 +597,26 @@ def send_telegram(message: str, config: GlobalConfig):
 
 
 def send_wechat(message: str):
+    """发送微信通知（接口要求 content、title、token 三个参数）"""
     api_url = os.getenv("WECHAT_API_URL")
     auth_token = os.getenv("WECHAT_AUTH_TOKEN")
     if not api_url or not auth_token:
         return
-    headers = {"Authorization": f"Bearer {auth_token}", "Content-Type": "application/json"}
+
+    payload = {
+        "content": message,
+        "title": "EUserv 续期通知",      # 固定标题
+        "token": auth_token              # 接口要求的 token 字段
+    }
+    headers = {"Content-Type": "application/json"}
     try:
-        resp = requests.post(api_url, json={"content": message}, headers=headers, timeout=10)
+        resp = requests.post(api_url, json=payload, headers=headers, timeout=10)
         if resp.status_code == 200:
             logger.info("✅ 微信通知发送成功")
         else:
             logger.error(f"❌ 微信失败: {resp.status_code} - {resp.text}")
     except Exception as e:
-        logger.error(f"❌ 微信异常: {e}")
+        logger.error(f"❌ 微信异常: {e}", exc_info=True)
 
 
 # ---------- 账号处理函数 ----------
@@ -648,6 +655,7 @@ def process_account(account_config: AccountConfig, global_config: GlobalConfig) 
                 logger.info(f"⏰ 服务器 {order_id} 可以续期")
                 success = euserv.renew_server(order_id)
                 if success:
+                    # 续期成功，下次可续期日期为当前日期 + 365天
                     next_date = (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d")
                     result['renew_results'].append({
                         'order_id': order_id,
@@ -656,6 +664,7 @@ def process_account(account_config: AccountConfig, global_config: GlobalConfig) 
                         'next_renew_date': next_date
                     })
                 else:
+                    # 续期失败，保留原有可续期日期（可能为空）
                     result['renew_results'].append({
                         'order_id': order_id,
                         'success': False,
@@ -694,7 +703,7 @@ def main():
                 logger.error(f"账号 {acc.email} 处理异常: {e}")
                 all_results.append({'email': acc.email, 'success': False, 'error': str(e)})
 
-    # 生成通知消息（汇总样式）
+    # 生成两套通知消息：带 HTML 用于 Telegram，纯文本用于微信
     tg_lines = [f"<b>🔄 EUserv 多账号续期报告</b>", f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", f"处理账号数: {len(all_results)}", ""]
     wx_lines = [f"🔄 EUserv 多账号续期报告", f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", f"处理账号数: {len(all_results)}", ""]
 
@@ -732,6 +741,7 @@ def main():
     tg_msg = "\n".join(tg_lines)
     wx_msg = "\n".join(wx_lines)
 
+    # 发送通知
     send_telegram(tg_msg, GLOBAL_CONFIG)
     send_wechat(wx_msg)
 
