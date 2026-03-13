@@ -1065,14 +1065,14 @@ def main():
     logger.info("处理结果汇总")
     logger.info("=" * 60)
     
-    message_parts = [f"<b>🔄 EUserv 多账号续期报告</b>\n"]
+    message_parts = [f"🔄 EUserv 多账号续期报告\n"]
     message_parts.append(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
     message_parts.append(f"处理账号数: {len(all_results)}\n")
     
     for result in all_results:
         email = result['email']
         logger.info(f"\n账号: {email}")
-        message_parts.append(f"\n<b>📧 账号: {email}</b>")
+        message_parts.append(f"\n📧 账号: {email}")
         
         if not result['success']:
             error_msg = result.get('error', '未知错误')
@@ -1110,3 +1110,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
