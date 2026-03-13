@@ -224,4 +224,57 @@ text
                  
 
 
+---
+## vps安装方法
+ 详细操作步骤
+1️⃣ 停止并删除当前青龙容器
+bash
+docker stop qinglong
+docker rm qinglong
+2️⃣ 重新创建青龙容器（添加关键挂载）
+bash
+docker run -d \
+  --name qinglong \
+  --restart always \
+  -v /ql:/ql/data \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /mnt/usb/euserv:/mnt/usb/euserv \
+  -p 5700:5700 \
+  whyour/qinglong:latest
+参数说明：
+
+-v /ql:/ql/data：将宿主机数据目录 /ql 挂载到容器内的 /ql/data（青龙官方镜像的数据目录就是 /ql/data，这样您的配置、数据库、日志等都会保留）。
+
+-v /var/run/docker.sock:/var/run/docker.sock：使容器内能通过 socket 调用宿主机的 Docker 守护进程。
+
+-v /mnt/usb/euserv:/mnt/usb/euserv：将存放 .env 文件的目录挂载进容器，确保容器内能读取环境变量。
+
+-p 5700:5700：保持原端口映射不变。
+
+3️⃣ 进入容器安装 Docker 客户端
+青龙官方镜像基于 Alpine Linux，执行以下命令：
+
+bash
+docker exec -it qinglong sh
+apk add docker-cli
+exit
+安装后验证：docker exec qinglong docker --version 应显示 Docker 版本信息。
+
+4️⃣ 测试容器内能否运行续期脚本
+bash
+docker exec -it qinglong sh -c "docker run --rm --env-file /mnt/usb/euserv/.env ghcr.io/djkyc/euserv-tg-wx-diy:latest"
+如果输出正常（如登录成功、续期结果），说明配置成功。
+
+5️⃣ 在青龙面板中配置定时任务
+任务命令保持原样（无需修改）：
+
+text
+docker run --rm --env-file /mnt/usb/euserv/.env ghcr.io/djkyc/euserv-tg-wx-diy:latest
+6️⃣ 权限检查
+确保 .env 文件可读（通常已是 644）：
+
+bash
+chmod 644 /mnt/usb/euserv/.env
+✅ 验证
+查看容器日志：docker logs qinglong 确认容器启动正常。
 
