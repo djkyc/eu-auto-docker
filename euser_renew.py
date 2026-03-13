@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 EUserv 自动续期脚本 - 多账号多线程版本
-支持多账号配置、多线程并发处理、自动登录、验证码识别、检查到期状态、自动续期并发送 Telegram / 微信通知
+支持多账号配置、多线程并发处理、自动登录、验证码识别、检查到期状态、自动续期并发送 Telegram 通知
 """
 
 import os
@@ -69,14 +69,11 @@ class AccountConfig:
 
 class GlobalConfig:
     """全局配置"""
-    def __init__(self, telegram_bot_token="", telegram_chat_id="", max_workers=3, max_login_retries=3,
-                 wechat_api_url="", wechat_auth_token=""):
+    def __init__(self, telegram_bot_token="", telegram_chat_id="", max_workers=3, max_login_retries=3):
         self.telegram_bot_token = telegram_bot_token
         self.telegram_chat_id = telegram_chat_id
         self.max_workers = max_workers
         self.max_login_retries = max_login_retries
-        self.wechat_api_url = wechat_api_url
-        self.wechat_auth_token = wechat_auth_token
 
 
 # ============== 配置区 ==============
@@ -85,9 +82,7 @@ GLOBAL_CONFIG = GlobalConfig(
     telegram_bot_token=os.getenv("TG_BOT_TOKEN"),
     telegram_chat_id=os.getenv("TG_CHAT_ID"),
     max_workers=3,  # 建议不超过5，避免触发频率限制
-    max_login_retries=3,
-    wechat_api_url=os.getenv("WECHAT_API_URL"),
-    wechat_auth_token=os.getenv("WECHAT_AUTH_TOKEN")
+    max_login_retries=3
 )
 
 
@@ -836,6 +831,7 @@ class EUserv:
                 logger.debug(f"步骤6: 执行真正的续期 ({next_subaction})...")
                 
                 # 提取表单中所有的 hidden input 作为参数
+                # 提取表单中所有的 hidden input 作为参数
                 data_confirm = {}
                 # 正则解析说明: finditer 匹配整个 input 标签, 然后分别匹配 name 和 value
                 for match in re.finditer(r'<input[^>]+type=["\']hidden["\'][^>]*>', dialog_html, re.IGNORECASE):
@@ -926,30 +922,6 @@ def send_telegram(message: str, config: GlobalConfig):
             logger.error(f"❌ Telegram 通知失败: {response.status_code}")
     except Exception as e:
         logger.error(f"❌ Telegram 异常: {e}", exc_info=True)
-
-
-def send_wechat(message: str, config: GlobalConfig):
-    """发送微信推送（通过配置的 API URL 和认证令牌）"""
-    if not config.wechat_api_url or not config.wechat_auth_token:
-        logger.debug("未配置微信推送，跳过")
-        return
-
-    headers = {
-        "Authorization": f"Bearer {config.wechat_auth_token}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "message": message
-    }
-
-    try:
-        response = requests.post(config.wechat_api_url, json=data, headers=headers, timeout=10)
-        if response.status_code == 200:
-            logger.info("✅ 微信推送发送成功")
-        else:
-            logger.error(f"❌ 微信推送失败: {response.status_code} - {response.text}")
-    except Exception as e:
-        logger.error(f"❌ 微信推送异常: {e}", exc_info=True)
 
 
 def process_account(account_config: AccountConfig, global_config: GlobalConfig) -> Dict:
@@ -1098,9 +1070,6 @@ def main():
     # 发送 Telegram 通知
     message = "\n".join(message_parts)
     send_telegram(message, GLOBAL_CONFIG)
-    
-    # 发送微信推送
-    send_wechat(message, GLOBAL_CONFIG)
     
     logger.info("\n" + "=" * 60)
     logger.info("执行完成")
