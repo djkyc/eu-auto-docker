@@ -1,45 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-EUserv 自动续期脚本 - 多账号多线程版本 (ddddocr 专业版 + 样式化通知)
-============================================================
-功能：
-  - 支持多个 EUserv 账号同时处理
-  - 使用 ddddocr 高效识别验证码
-  - 自动获取邮箱 PIN（支持常见邮箱 IMAP）
-  - 多步骤续期操作，自动跳过无需续期的服务器
-  - 多渠道通知：Telegram、PushPlus（微信公众号）、自定义微信 WebHook
-  - 通知样式：✅成功 / ℹ️无需续期 / ❌失败
-
-环境变量配置（建议通过 .env 文件传入）：
-  - EUSERV_ACCOUNTS  : 多账号配置，格式见下文
-  - 或单账号：EUSERV_EMAIL, EUSERV_PASSWORD, EMAIL_PASS
-  - TG_BOT_TOKEN / TG_CHAT_ID            : Telegram 通知
-  - PUSH_PLUS_TOKEN                       : PushPlus 微信公众号
-  - WECHAT_API_URL / WECHAT_AUTH_TOKEN   : 自定义微信 WebHook
-  - SKIP_CONTRACTS                        : 要跳过的合同 ID，逗号分隔
-  - DEBUG                                 : 调试模式 (true / false / html)
-  - HTTP_PROXY / HTTPS_PROXY               : 代理（可选）
-  - MAX_WORKERS                            : 最大并发线程数（默认3）
-  - MAX_LOGIN_RETRIES                      : 登录重试次数（默认3）
-  - MAIL_RETRIES / MAIL_INTERVAL           : 邮件重试次数/间隔（默认12/5）
-  - RENEW_ALL                               : 是否续期所有可续期合同（默认false）
-
-多账号配置格式 (EUSERV_ACCOUNTS):
-  email1:password1[:imap_server:email_password];email2:password2...
-  冒号分隔字段，分号分隔账号。后两个字段可选（自动识别 IMAP，密码默认同登录密码）。
+EUserv 自动续期脚本 - 多账号多线程版本
+支持多账号配置、多线程并发处理、自动登录、验证码识别、检查到期状态、自动续期
+并发送 Telegram / 微信通知（三种样式：登录失败、无需续期、续期成功/失败 + 下次续期日期）
 """
 
 import os
 import sys
-import io
 import re
 import json
 import time
 import threading
 import logging
 from typing import Dict, List, Tuple, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from PIL import Image
@@ -48,10 +23,10 @@ import requests
 from bs4 import BeautifulSoup
 from imap_tools import MailBox
 
-# ==================== 日志配置 ====================
-_debug_env = os.getenv("DEBUG", "").lower()
-DEBUG_MODE = _debug_env in ("true", "1", "yes", "html")
-SAVE_HTML_MODE = _debug_env == "html"
+# ---------- 配置区 ----------
+DEBUG_ENV = os.getenv("DEBUG", "").lower()
+DEBUG_MODE = DEBUG_ENV in ("true", "1", "yes", "html")
+SAVE_HTML_MODE = DEBUG_ENV == "html"
 log_level = logging.DEBUG if DEBUG_MODE else logging.INFO
 
 logging.basicConfig(
@@ -61,7 +36,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ==================== 全局常量 ====================
+# 跳过合同列表（环境变量 SKIP_CONTRACTS，逗号分隔）
 SKIP_CONTRACTS = [x.strip() for x in os.getenv("SKIP_CONTRACTS", "").split(",") if x.strip()]
 if SKIP_CONTRACTS:
     logger.info(f"配置了跳过合同列表: {SKIP_CONTRACTS}")
@@ -70,19 +45,16 @@ if SKIP_CONTRACTS:
 if not hasattr(Image, 'ANTIALIAS'):
     Image.ANTIALIAS = Image.Resampling.LANCZOS
 
-# 初始化 OCR（线程安全）
+# 全局 OCR 实例（线程安全）
 ocr = ddddocr.DdddOcr()
 ocr_lock = threading.Lock()
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.61 Safari/537.36"
 
-
-# ==================== 配置数据类 ====================
+# ============== 配置数据类 ==============
 class AccountConfig:
     """单个账号配置"""
-    def __init__(self, email: str, password: str,
-                 imap_server: str = 'imap.gmail.com',
-                 email_password: str = ''):
+    def __init__(self, email, password, imap_server='imap.gmail.com', email_password=''):
         self.email = email
         self.password = password
         self.imap_server = imap_server
@@ -91,26 +63,22 @@ class AccountConfig:
 
 class GlobalConfig:
     """全局配置"""
-    def __init__(self, telegram_bot_token: str = "",
-                 telegram_chat_id: str = "",
-                 max_workers: int = 3,
-                 max_login_retries: int = 3):
+    def __init__(self, telegram_bot_token="", telegram_chat_id="", max_workers=3, max_login_retries=3):
         self.telegram_bot_token = telegram_bot_token
         self.telegram_chat_id = telegram_chat_id
         self.max_workers = max_workers
         self.max_login_retries = max_login_retries
 
 
-# ==================== 全局配置实例 ====================
+# 全局配置实例
 GLOBAL_CONFIG = GlobalConfig(
-    telegram_bot_token=os.getenv("TG_BOT_TOKEN", ""),
-    telegram_chat_id=os.getenv("TG_CHAT_ID", ""),
-    max_workers=int(os.getenv("MAX_WORKERS", "3")),
-    max_login_retries=int(os.getenv("MAX_LOGIN_RETRIES", "3"))
+    telegram_bot_token=os.getenv("TG_BOT_TOKEN"),
+    telegram_chat_id=os.getenv("TG_CHAT_ID"),
+    max_workers=3,
+    max_login_retries=3
 )
 
 
-# ==================== 辅助函数 ====================
 def get_imap_server(email: str) -> str:
     """根据邮箱域名自动选择 IMAP 服务器"""
     if "@qq.com" in email or "@foxmail.com" in email:
@@ -122,161 +90,86 @@ def get_imap_server(email: str) -> str:
     return "imap.gmail.com"
 
 
-def parse_accounts(env_str: str) -> List[AccountConfig]:
-    """
-    解析 EUSERV_ACCOUNTS 环境变量。
-    格式：email1:password1[:imap_server:email_password];email2:password2...
-    """
-    accounts = []
-    if not env_str:
-        return accounts
-    for part in env_str.split(';'):
-        part = part.strip()
-        if not part:
-            continue
-        fields = part.split(':')
-        if len(fields) < 2:
-            logger.warning(f"账号格式错误，跳过: {part}")
-            continue
-        email = fields[0]
-        password = fields[1]
-        imap_server = fields[2] if len(fields) > 2 else get_imap_server(email)
-        email_password = fields[3] if len(fields) > 3 else password
-        accounts.append(AccountConfig(email, password, imap_server, email_password))
-    return accounts
+# 账号列表（从环境变量读取）
+_email = os.getenv("EUSERV_EMAIL", "")
+ACCOUNTS = [
+    AccountConfig(
+        email=_email,
+        password=os.getenv("EUSERV_PASSWORD"),
+        imap_server=get_imap_server(_email),
+        email_password=os.getenv("EMAIL_PASS")
+    )
+    # 如需多账号，请在此处添加更多 AccountConfig 实例
+]
 
+# ======================================
 
-# 读取账号配置（优先多账号）
-_accounts_env = os.getenv("EUSERV_ACCOUNTS", "").strip()
-if _accounts_env:
-    ACCOUNTS = parse_accounts(_accounts_env)
-    logger.info(f"从 EUSERV_ACCOUNTS 解析到 {len(ACCOUNTS)} 个账号")
-else:
-    # 兼容单账号模式
-    single_email = os.getenv("EUSERV_EMAIL", "")
-    single_pass = os.getenv("EUSERV_PASSWORD", "")
-    if single_email and single_pass:
-        ACCOUNTS = [AccountConfig(
-            email=single_email,
-            password=single_pass,
-            imap_server=get_imap_server(single_email),
-            email_password=os.getenv("EMAIL_PASS", single_pass)
-        )]
-        logger.info("使用单账号模式")
-    else:
-        ACCOUNTS = []
-        logger.warning("未配置任何账号，请设置 EUSERV_ACCOUNTS 或 EUSERV_EMAIL/PASSWORD")
-
-
-# ==================== 验证码识别 ====================
-def recognize_captcha(image_bytes: bytes) -> Optional[str]:
-    """使用 ddddocr 识别验证码图片，返回识别结果（可能含空格，保持原始大小写）"""
-    with ocr_lock:
-        try:
-            return ocr.classification(image_bytes).strip()
-        except Exception as e:
-            logger.error(f"ddddocr 识别失败: {e}")
-            return None
-
-
-def parse_math_expression(text: str) -> Optional[str]:
-    """
-    尝试解析数学运算式（如 5*F, 8+3）并计算结果。
-    支持运算符：+ - * × x X / ÷
-    字母映射：A=10 ... Z=35
-    返回计算结果字符串，若无法解析或运算非法则返回 None。
-    """
-    # 预处理：去除空格，转大写
-    raw = text.strip().replace(' ', '').upper().rstrip('?')
-    # 纯字母数字直接返回原值
-    if re.fullmatch(r'[A-Z0-9]+', raw):
-        return raw
-
-    # 匹配运算式：数字 运算符 (数字或字母)
-    pattern = r'^(\d+)([+\-*/×xX÷])(\d+|[A-Z])=?'
-    match = re.search(pattern, raw)
-    if not match:
-        # 尝试宽松匹配（可能开头有额外字符）
-        match = re.search(r'(\d+)([+\-*/×xX÷])(\d+|[A-Z])', raw)
-    if not match:
-        return None
-
-    left_str, op, right_str = match.groups()
-    left = int(left_str)
-
-    # 处理右操作数
-    if right_str.isdigit():
-        right = int(right_str)
-    elif 'A' <= right_str <= 'Z':
-        right = ord(right_str) - ord('A') + 10
-    else:
-        return None
-
-    # 计算
-    if op in {'*', '×', 'X', 'x'}:
-        result = left * right
-    elif op == '+':
-        result = left + right
-    elif op == '-':
-        result = left - right
-    elif op in {'/', '÷'}:
-        if right == 0 or left % right != 0:
-            return None
-        result = left // right
-    else:
-        return None
-
-    return str(result)
-
-
-def recognize_and_calculate(captcha_url: str, session: requests.Session) -> Optional[str]:
-    """
-    下载验证码图片，识别后返回候选值（原始识别结果或计算结果）。
-    若无法识别返回 None。
-    """
+def recognize_and_calculate(captcha_image_url: str, session: requests.Session) -> Optional[str]:
+    """识别并计算验证码（线程安全）"""
     logger.info("正在处理验证码...")
     try:
-        resp = session.get(captcha_url)
-        img_bytes = resp.content
+        response = session.get(captcha_image_url)
+        image_bytes = response.content
+        with ocr_lock:
+            text = ocr.classification(image_bytes).strip()
+        logger.debug(f"OCR 识别文本: {text}")
 
-        # 直接识别
-        text = recognize_captcha(img_bytes)
-        if not text:
-            logger.warning("ddddocr 未识别出任何字符")
-            return None
+        raw_text = text.strip()
+        text = raw_text.replace(' ', '').upper()
 
-        logger.debug(f"原始识别结果: {text}")
+        # 情况1：纯字母数字
+        if re.fullmatch(r'[A-Z0-9]+', text):
+            logger.info(f"检测到纯字母数字验证码: {raw_text}")
+            return raw_text.strip()
 
-        # 尝试解析为数学运算
-        calculated = parse_math_expression(text)
-        if calculated is not None and calculated != text.strip():
-            logger.info(f"验证码运算解析: {calculated}")
-            return calculated
+        # 情况2：四则运算
+        pattern = r'^(\d+)([+\-*/×xX÷/])(\d+|[A-Z])$'
+        match = re.match(pattern, text)
+        if not match:
+            logger.warning(f"无法解析验证码格式: {raw_text}")
+            return raw_text.strip()
 
-        # 返回原始识别结果（去空格）
-        clean = text.strip()
-        logger.info(f"验证码原始结果: {clean}")
-        return clean
+        left_str, op, right_str = match.groups()
+        left = int(left_str)
 
+        if right_str.isdigit():
+            right = int(right_str)
+        else:
+            if 'A' <= right_str <= 'Z':
+                right = ord(right_str) - ord('A') + 10
+            else:
+                logger.warning(f"右边字符无效: {right_str}")
+                return raw_text.strip()
+
+        if op in {'*', '×', 'X', 'x'}:
+            result = left * right
+        elif op == '+':
+            result = left + right
+        elif op == '-':
+            result = left - right
+        elif op in {'/', '÷'}:
+            if right == 0:
+                logger.warning("除数为0")
+                return raw_text.strip()
+            if left % right != 0:
+                logger.warning(f"除法非整除: {left} ÷ {right}")
+                return raw_text.strip()
+            result = left // right
+        else:
+            logger.warning(f"未知运算符: {op}")
+            return raw_text.strip()
+
+        logger.info(f"验证码计算: {left} {op} {right_str} = {result}")
+        return str(result)
     except Exception as e:
-        logger.error(f"验证码处理异常: {e}", exc_info=True)
+        logger.error(f"验证码识别错误: {e}", exc_info=True)
         return None
 
 
-# ==================== 邮箱 PIN 获取 ====================
-def get_euserv_pin(
-    email: str,
-    email_password: str,
-    imap_server: str,
-    after_time: datetime = None,
-    pin_type: str = 'login'
-) -> Optional[str]:
-    """
-    从邮箱获取 EUserv PIN 码（带重试机制）
-    pin_type: 'login' 或 'renew'，用于过滤邮件主题
-    """
-    max_retries = int(os.getenv("MAIL_RETRIES", "12"))
-    retry_interval = int(os.getenv("MAIL_INTERVAL", "5"))
+def get_euserv_pin(email: str, email_password: str, imap_server: str, after_time: datetime = None, pin_type: str = 'login') -> Optional[str]:
+    """从邮箱获取 EUserv PIN 码（带重试）"""
+    max_retries = 12
+    retry_interval = 5
 
     if pin_type == 'renew':
         subject_keywords = ['security check', 'confirmation']
@@ -285,72 +178,64 @@ def get_euserv_pin(
         subject_keywords = ['attempted login', 'login']
         type_name = "登录"
 
-    logger.info(f"正在从邮箱 {email} 获取{type_name} PIN 码（最长等待 {max_retries * retry_interval} 秒）...")
-    if after_time:
-        logger.debug(f"只查找 {after_time.strftime('%H:%M:%S')} 之后的邮件")
-
+    logger.info(f"正在从邮箱 {email} 获取{type_name} PIN 码...")
     for i in range(max_retries):
-        if i > 0:
-            logger.info(f"第 {i + 1} 次尝试获取邮件...")
-            time.sleep(retry_interval)
-
         try:
+            if i > 0:
+                time.sleep(retry_interval)
             with MailBox(imap_server).login(email, email_password) as mailbox:
                 for msg in mailbox.fetch(limit=10, reverse=True):
                     if 'euserv' not in msg.from_.lower():
                         continue
-                    if not any(kw in msg.subject.lower() for kw in subject_keywords):
+                    if not any(k in msg.subject.lower() for k in subject_keywords):
                         continue
-
-                    # 时间过滤（允许 2 分钟误差）
                     if after_time and msg.date:
-                        msg_ts = msg.date.timestamp()
-                        if msg_ts < (after_time.timestamp() - 120):
+                        email_dt = msg.date.replace(tzinfo=None)
+                        filter_dt = after_time.replace(tzinfo=None)
+                        if email_dt.timestamp() < (filter_dt.timestamp() - 120):
                             continue
-
-                    text = msg.text or ""
-                    # 优先匹配 PIN: 后的六位数
-                    match = re.search(r'PIN:\s*\n?(\d{6})', text) or re.search(r'PIN.*?(\d{6})', text, re.DOTALL)
+                    # 提取 PIN
+                    match = re.search(r'PIN:\s*\n?(\d{6})', msg.text) or re.search(r'PIN.*?(\d{6})', msg.text, re.DOTALL)
                     if match:
                         pin = match.group(1)
-                        logger.info(f"✅ 提取到{type_name} PIN 码: {pin}")
+                        logger.info(f"✅ 提取到{type_name} PIN: {pin}")
                         return pin
-                    # 备用：任意六位数
-                    fallback = re.search(r'\b(\d{6})\b', text)
-                    if fallback:
-                        pin = fallback.group(1)
-                        logger.info(f"✅ 提取到{type_name} PIN 码（备用）: {pin}")
+                    match_fb = re.search(r'\b(\d{6})\b', msg.text)
+                    if match_fb:
+                        pin = match_fb.group(1)
+                        logger.info(f"✅ 提取到{type_name} PIN: {pin}")
                         return pin
         except Exception as e:
-            logger.warning(f"邮件获取异常: {e}")
-
-    logger.error(f"❌ 超时未找到{type_name} PIN 码邮件")
+            logger.warning(f"获取邮件失败: {e}")
+    logger.error(f"❌ 超时未找到{type_name} PIN 码")
     return None
 
 
-# ==================== EUserv 操作类 ====================
 class EUserv:
+    """EUserv 操作类"""
     def __init__(self, config: AccountConfig):
         self.config = config
         self.session = requests.Session()
         self.sess_id = None
-        self._login_html = ""
+        self._login_response_html = None
 
     def login(self) -> bool:
-        """执行登录流程，返回成功与否"""
+        """登录 EUserv"""
         logger.info(f"正在登录账号: {self.config.email}")
+        headers = {'user-agent': USER_AGENT, 'origin': 'https://www.euserv.com'}
         url = "https://support.euserv.com/index.iphp"
         captcha_url = "https://support.euserv.com/securimage_show.php"
-        headers = {'user-agent': USER_AGENT, 'origin': 'https://www.euserv.com'}
 
         try:
             # 获取 sess_id
-            resp = self.session.get(url, headers=headers)
-            sess_match = re.search(r'sess_id=([a-zA-Z0-9]{30,100})', resp.text)
-            if not sess_match:
+            sess = self.session.get(url, headers=headers)
+            sess_id_match = re.search(r'sess_id["\']?\s*[:=]\s*["\']?([a-zA-Z0-9]{30,100})["\']?', sess.text)
+            if not sess_id_match:
+                sess_id_match = re.search(r'sess_id=([a-zA-Z0-9]{30,100})', sess.text)
+            if not sess_id_match:
                 logger.error("❌ 无法获取 sess_id")
                 return False
-            sess_id = sess_match.group(1)
+            sess_id = sess_id_match.group(1)
             logger.debug(f"sess_id: {sess_id[:20]}...")
 
             # 提交登录表单
@@ -362,45 +247,43 @@ class EUserv:
                 'subaction': 'login',
                 'sess_id': sess_id
             }
-            resp = self.session.post(url, headers=headers, data=login_data)
-            resp.raise_for_status()
+            response = self.session.post(url, headers=headers, data=login_data)
+            response.raise_for_status()
 
-            # 检查常见错误
-            if 'Please check email address/customer ID and password' in resp.text:
+            # 检查错误
+            if 'Please check email address/customer ID and password' in response.text:
                 logger.error("❌ 用户名或密码错误")
                 return False
-            if 'kc2_login_iplock_cdown' in resp.text:
-                logger.error("❌ 账号被锁定，请稍后重试")
+            if 'kc2_login_iplock_cdown' in response.text:
+                logger.error("❌ 账号被锁定，请5分钟后重试")
                 return False
 
-            # ---- 验证码处理 ----
-            if 'captcha' in resp.text.lower():
+            # 处理验证码
+            if 'captcha' in response.text.lower():
                 captcha_success = False
                 for attempt in range(3):
-                    logger.info(f"⚠️ 验证码识别（第 {attempt+1}/3 次）")
+                    logger.info(f"验证码识别尝试 {attempt+1}/3")
                     code = recognize_and_calculate(captcha_url, self.session)
                     if not code:
-                        time.sleep(2)
                         continue
-                    post_data = {
+                    captcha_data = {
                         'subaction': 'login',
                         'sess_id': sess_id,
                         'captcha_code': code
                     }
-                    resp = self.session.post(url, headers=headers, data=post_data)
+                    resp = self.session.post(url, headers=headers, data=captcha_data)
+                    resp.raise_for_status()
                     if 'captcha' not in resp.text.lower():
                         captcha_success = True
+                        response = resp
                         logger.info("✅ 验证码通过")
                         break
-                    else:
-                        logger.debug(f"验证码 {code} 错误")
-                        time.sleep(2)
                 if not captcha_success:
                     logger.error("❌ 验证码连续失败")
                     return False
 
-            # ---- PIN 验证 ----
-            if 'PIN that you receive via email' in resp.text:
+            # 处理 PIN 验证
+            if 'PIN that you receive via email' in response.text:
                 logger.info("⚠️ 需要 PIN 验证")
                 pin_time = datetime.now()
                 time.sleep(3)
@@ -412,229 +295,449 @@ class EUserv:
                     pin_type='login'
                 )
                 if not pin:
-                    logger.error("❌ 获取 PIN 码失败")
+                    logger.error("❌ 获取 PIN 失败")
                     return False
-                soup = BeautifulSoup(resp.text, 'html.parser')
-                c_id = soup.find('input', {'name': 'c_id'})['value']
-                pin_data = {
+                soup = BeautifulSoup(response.text, "html.parser")
+                confirm_data = {
                     'pin': pin,
                     'sess_id': sess_id,
                     'Submit': 'Confirm',
                     'subaction': 'login',
-                    'c_id': c_id
+                    'c_id': soup.find("input", {"name": "c_id"})["value"],
                 }
-                resp = self.session.post(url, headers=headers, data=pin_data)
+                response = self.session.post(url, headers=headers, data=confirm_data)
+                response.raise_for_status()
 
-            # 判断登录成功
-            if any(x in resp.text for x in ['Hello', 'Confirm or change your customer data here', 'logout']):
+            # 检查登录成功
+            if any(key in response.text for key in ['Hello', 'Confirm or change your customer data', 'logout']):
                 logger.info(f"✅ 账号 {self.config.email} 登录成功")
                 self.sess_id = sess_id
-                self._login_html = resp.text
+                self._login_response_html = response.text
                 return True
             else:
-                logger.error(f"❌ 登录失败，未知响应")
+                logger.error(f"❌ 登录失败")
                 return False
-
         except Exception as e:
             logger.error(f"登录异常: {e}", exc_info=True)
             return False
 
     def confirm_customer_data(self) -> bool:
-        """确认个人信息页面（解除面板限制）"""
-        # 此处为简化占位，实际使用时请替换为完整实现
-        logger.debug("跳过 Customer Data 确认（占位）")
-        return True
+        """确认 Customer Data 页面"""
+        if not self.sess_id:
+            return False
+        url = "https://support.euserv.com/index.iphp"
+        headers = {'user-agent': USER_AGENT, 'origin': 'https://support.euserv.com', 'Referer': url}
+        try:
+            # 获取页面
+            page_html = getattr(self, '_login_response_html', None)
+            if not page_html:
+                resp = self.session.get(f"{url}?sess_id={self.sess_id}&subaction=show_kc2_customer_customer_data", headers=headers)
+                resp.raise_for_status()
+                page_html = resp.text
+
+            if 'must be checked and confirmed' not in page_html:
+                logger.info("✓ Customer Data 无需确认")
+                return True
+
+            logger.info("⚠️ 检测到 Customer Data 需要确认，正在自动提交...")
+            soup = BeautifulSoup(page_html, 'html.parser')
+            target_form = None
+            for form in soup.find_all('form'):
+                if form.find('input', {'value': re.compile(r'Save', re.I)}):
+                    target_form = form
+                    break
+            if not target_form:
+                logger.warning("未找到表单")
+                return False
+
+            # 收集表单数据
+            form_data = []
+            phone_prefix = fax_prefix = ''
+            for inp in target_form.find_all('input'):
+                name = inp.get('name')
+                if not name or inp.get('disabled') is not None:
+                    continue
+                typ = inp.get('type', '').lower()
+                if typ == 'checkbox':
+                    if inp.get('checked') is not None:
+                        form_data.append((name, inp.get('value', 'on')))
+                elif typ == 'radio':
+                    if inp.get('checked') is not None:
+                        form_data.append((name, inp.get('value', '')))
+                elif typ == 'submit':
+                    if inp.get('value', '').lower() in ('save', 'speichern'):
+                        form_data.append((name, inp.get('value', 'Save')))
+                else:
+                    value = inp.get('value', '')
+                    form_data.append((name, value))
+                    if name == 'c_phone_country_prefix':
+                        phone_prefix = value
+                    elif name == 'c_fax_country_prefix':
+                        fax_prefix = value
+
+            for sel in target_form.find_all('select'):
+                name = sel.get('name')
+                if not name or sel.get('disabled') is not None:
+                    continue
+                selected = sel.find('option', selected=True)
+                if selected:
+                    val = selected.get('value', selected.get_text(strip=True))
+                else:
+                    first = sel.find('option')
+                    val = first.get('value', first.get_text(strip=True)) if first else ''
+                form_data.append((name, val))
+
+            if phone_prefix:
+                form_data.append(('form_c_phone_country_prefix', phone_prefix))
+            if fax_prefix:
+                form_data.append(('form_c_fax_country_prefix', fax_prefix))
+
+            # 替换 sess_id
+            form_data = [(k, v) if k != 'sess_id' else (k, self.sess_id) for k, v in form_data]
+
+            action = target_form.get('action', '')
+            submit_url = f"https://support.euserv.com/{action.lstrip('/')}" if action and not action.startswith('http') else (action or url)
+            resp = self.session.post(submit_url, headers=headers, data=form_data)
+            resp.raise_for_status()
+
+            # 判断结果
+            try:
+                res_json = resp.json()
+                if res_json.get('rc') == '100':
+                    logger.info("✅ Customer Data 确认成功")
+                    return True
+                else:
+                    logger.warning(f"确认返回非成功: {res_json}")
+                    return False
+            except:
+                if 'must be checked and confirmed' not in resp.text:
+                    logger.info("✅ Customer Data 确认成功")
+                    return True
+                logger.warning("确认后仍有警告")
+                return False
+        except Exception as e:
+            logger.error(f"Customer Data 确认异常: {e}", exc_info=True)
+            return False
 
     def get_servers(self) -> Dict[str, Tuple[bool, str]]:
-        """获取服务器列表，返回 {order_id: (can_renew, next_date)}"""
-        # 此处为简化占位，实际使用时请替换为完整实现
-        logger.debug("获取服务器列表（占位）")
-        return {}
+        """获取服务器列表"""
+        if not self.sess_id:
+            return {}
+        url = f"https://support.euserv.com/index.iphp?sess_id={self.sess_id}"
+        headers = {'user-agent': USER_AGENT}
+        try:
+            resp = self.session.get(url, headers=headers)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            servers = {}
+            selector = '#kc2_order_customer_orders_tab_content_1 .kc2_order_table.kc2_content_table tr, #kc2_order_customer_orders_tab_content_2 .kc2_order_table.kc2_content_table tr'
+            for tr in soup.select(selector):
+                sid_td = tr.select('.td-z1-sp1-kc')
+                if len(sid_td) != 1:
+                    continue
+                sid = sid_td[0].get_text().strip()
+                row_text = tr.get_text().lower()
+                if sid in SKIP_CONTRACTS:
+                    logger.info(f"⏭️ 跳过合同 {sid}")
+                    continue
+                if 'sync' in row_text and 'share' in row_text:
+                    logger.info(f"⏭️ 跳过 Sync & Share 合同 {sid}")
+                    continue
+                action_container = tr.select('.td-z1-sp2-kc .kc2_order_action_container')
+                if not action_container:
+                    continue
+                action_text = action_container[0].get_text()
+                can_renew = 'Contract extension possible from' not in action_text
+                renew_date = ''
+                if not can_renew:
+                    date_match = re.search(r'\b(\d{4}-\d{2}-\d{2})\b', action_text)
+                    if date_match:
+                        renew_date = date_match.group(1)
+                        can_renew = datetime.now().date() >= datetime.strptime(renew_date, "%Y-%m-%d").date()
+                servers[sid] = (can_renew, renew_date)
+            logger.info(f"✅ 账号 {self.config.email} 找到 {len(servers)} 台服务器")
+            return servers
+        except Exception as e:
+            logger.error(f"获取服务器列表失败: {e}", exc_info=True)
+            return {}
 
     def renew_server(self, order_id: str) -> bool:
-        """执行单个服务器的续期流程"""
-        # 此处为简化占位，实际使用时请替换为完整实现
-        logger.debug(f"续期服务器 {order_id}（占位）")
-        return True
+        """续期指定服务器"""
+        logger.info(f"正在续期服务器 {order_id}...")
+        url = "https://support.euserv.com/index.iphp"
+        headers = {'user-agent': USER_AGENT, 'origin': 'https://support.euserv.com', 'Referer': url}
 
-
-# ==================== 通知函数 ====================
-def send_notification(message: str, config: GlobalConfig) -> None:
-    """综合发送通知（Telegram / PushPlus / 自定义微信）"""
-    # Telegram
-    if config.telegram_bot_token and config.telegram_chat_id:
-        base_url = os.getenv("TG_API_URL", "https://api.telegram.org").rstrip('/')
-        url = f"{base_url}/bot{config.telegram_bot_token}/sendMessage"
-        data = {"chat_id": config.telegram_chat_id, "text": message, "parse_mode": "HTML"}
-        proxies = None
-        if os.getenv("TG_PROXY"):
-            proxies = {"http": os.getenv("TG_PROXY"), "https": os.getenv("TG_PROXY")}
         try:
-            r = requests.post(url, json=data, timeout=15, proxies=proxies)
-            if r.status_code == 200:
-                logger.info("✅ Telegram 通知发送成功")
-            else:
-                logger.error(f"❌ Telegram 通知失败: {r.status_code}")
-        except Exception as e:
-            logger.error(f"❌ Telegram 异常: {e}")
-
-    # PushPlus
-    push_token = os.getenv("PUSH_PLUS_TOKEN")
-    if push_token:
-        try:
-            url = "http://www.pushplus.plus/send"
-            data = {
-                "token": push_token,
-                "title": "📋 EUserv 自动续期报告",
-                "content": message.replace('\n', '<br>'),
-                "template": "html"
+            # 步骤1：选择订单
+            data1 = {
+                'Submit': 'Extend contract',
+                'sess_id': self.sess_id,
+                'ord_no': order_id,
+                'subaction': 'choose_order',
+                'show_contract_extension': '1',
+                'choose_order_subaction': 'show_contract_details'
             }
-            r = requests.post(url, json=data, timeout=15)
-            if r.status_code == 200:
-                logger.info("✅ PushPlus 通知发送成功")
-            else:
-                logger.error(f"❌ PushPlus 失败: {r.status_code}")
+            resp1 = self.session.post(url, headers=headers, data=data1)
+            resp1.raise_for_status()
+
+            # 步骤2：触发发送 PIN
+            pin_time = datetime.now()
+            data2 = {
+                'sess_id': self.sess_id,
+                'subaction': 'show_kc2_security_password_dialog',
+                'prefix': 'kc2_customer_contract_details_extend_contract_',
+                'type': '1'
+            }
+            resp2 = self.session.post(url, headers=headers, data=data2)
+            resp2.raise_for_status()
+
+            # 步骤3：获取 PIN
+            time.sleep(5)
+            pin = get_euserv_pin(
+                self.config.email,
+                self.config.email_password,
+                self.config.imap_server,
+                after_time=pin_time,
+                pin_type='renew'
+            )
+            if not pin:
+                logger.error("❌ 获取续期 PIN 失败")
+                return False
+
+            # 步骤4：获取 token
+            data3 = {
+                'sess_id': self.sess_id,
+                'auth': pin,
+                'subaction': 'kc2_security_password_get_token',
+                'prefix': 'kc2_customer_contract_details_extend_contract_',
+                'type': '1',
+                'ident': f'kc2_customer_contract_details_extend_contract_{order_id}'
+            }
+            resp3 = self.session.post(url, headers=headers, data=data3)
+            resp3.raise_for_status()
+            result3 = resp3.json()
+            if result3.get('rs') != 'success':
+                logger.error(f"获取 token 失败: {result3}")
+                return False
+            token = result3['token']['value']
+
+            # 步骤5：获取确认对话框
+            data4 = {
+                'sess_id': self.sess_id,
+                'subaction': 'kc2_customer_contract_details_get_extend_contract_confirmation_dialog',
+                'token': token
+            }
+            resp4 = self.session.post(url, headers=headers, data=data4)
+            resp4.raise_for_status()
+
+            # 解析对话框，提取 hidden 字段
+            dialog_html = ''
+            try:
+                j4 = resp4.json()
+                if isinstance(j4, dict):
+                    dialog_html = j4.get('html', {}).get('value', '') or j4.get('value', '')
+            except:
+                dialog_html = resp4.text
+
+            # 提取 subaction
+            subaction_match = re.search(r'name=["\']subaction["\']\s+value=["\']([^"\']+)["\']', dialog_html)
+            next_subaction = subaction_match.group(1) if subaction_match else 'kc2_customer_contract_details_extend_contract_term'
+
+            # 提取所有 hidden
+            data_confirm = {}
+            for match in re.finditer(r'<input[^>]+type=["\']hidden["\'][^>]*>', dialog_html, re.IGNORECASE):
+                tag = match.group(0)
+                name_m = re.search(r'name=["\']([^"\']+)["\']', tag)
+                val_m = re.search(r'value=["\']([^"\']*)["\']', tag)
+                if name_m and val_m:
+                    data_confirm[name_m.group(1)] = val_m.group(1)
+
+            # 确保 token 存在
+            if 'token' not in data_confirm:
+                token_m = re.search(r'name=["\']token["\']\s+value=["\']([^"\']+)["\']', dialog_html)
+                if token_m:
+                    data_confirm['token'] = token_m.group(1)
+
+            # 步骤6：提交续期
+            time.sleep(2)
+            resp5 = self.session.post(url, headers=headers, data=data_confirm)
+            resp5.raise_for_status()
+
+            # 判断结果
+            html_lower = resp5.text.lower()
+            if "error: token missing" in html_lower:
+                logger.error("❌ 续期失败: token missing")
+                return False
+            success_keywords = ['successfully extended', 'erfolgreich', 'contract extended', 'verlängert', 'extension successful']
+            for kw in success_keywords:
+                if kw in html_lower:
+                    logger.info(f"✅ 服务器 {order_id} 续期成功")
+                    return True
+            logger.info(f"✅ 服务器 {order_id} 续期请求已提交（请检查邮件）")
+            return True
         except Exception as e:
-            logger.error(f"❌ PushPlus 异常: {e}")
-
-    # 自定义微信
-    wechat_url = os.getenv("WECHAT_API_URL")
-    if wechat_url:
-        token = os.getenv("WECHAT_AUTH_TOKEN")
-        try:
-            payload = {"title": "EUserv 续期报告", "content": re.sub(r'<[^>]+>', '', message)}
-            if token:
-                payload["token"] = token
-            r = requests.post(wechat_url, json=payload, timeout=10)
-            if r.status_code == 200:
-                logger.info("✅ 自定义微信通知发送成功")
-            else:
-                logger.error(f"❌ 微信通知失败: {r.status_code}")
-        except Exception as e:
-            logger.error(f"❌ 微信异常: {e}")
+            logger.error(f"❌ 服务器 {order_id} 续期异常: {e}", exc_info=True)
+            return False
 
 
-# ==================== 账号处理 ====================
-def process_account(account: AccountConfig, global_config: GlobalConfig) -> dict:
+# ---------- 通知发送函数 ----------
+def send_telegram(message: str, config: GlobalConfig):
+    if not config.telegram_bot_token or not config.telegram_chat_id:
+        return
+    url = f"https://api.telegram.org/bot{config.telegram_bot_token}/sendMessage"
+    data = {"chat_id": config.telegram_chat_id, "text": message, "parse_mode": "HTML"}
+    try:
+        resp = requests.post(url, json=data, timeout=10)
+        if resp.status_code == 200:
+            logger.info("✅ Telegram 通知发送成功")
+        else:
+            logger.error(f"❌ Telegram 失败: {resp.status_code}")
+    except Exception as e:
+        logger.error(f"❌ Telegram 异常: {e}")
+
+
+def send_wechat(message: str):
+    api_url = os.getenv("WECHAT_API_URL")
+    auth_token = os.getenv("WECHAT_AUTH_TOKEN")
+    if not api_url or not auth_token:
+        return
+    headers = {"Authorization": f"Bearer {auth_token}", "Content-Type": "application/json"}
+    try:
+        resp = requests.post(api_url, json={"content": message}, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            logger.info("✅ 微信通知发送成功")
+        else:
+            logger.error(f"❌ 微信失败: {resp.status_code} - {resp.text}")
+    except Exception as e:
+        logger.error(f"❌ 微信异常: {e}")
+
+
+# ---------- 账号处理函数 ----------
+def process_account(account_config: AccountConfig, global_config: GlobalConfig) -> Dict:
     result = {
-        'email': account.email,
+        'email': account_config.email,
         'success': False,
         'servers': {},
         'renew_results': [],
         'error': None
     }
     try:
-        e = EUserv(account)
-
-        # 登录重试
+        euserv = EUserv(account_config)
         login_ok = False
         for attempt in range(global_config.max_login_retries):
             if attempt > 0:
-                logger.info(f"账号 {account.email} 第 {attempt+1} 次重试登录")
                 time.sleep(5)
-            if e.login():
+            if euserv.login():
                 login_ok = True
                 break
         if not login_ok:
             result['error'] = "登录失败"
             return result
 
-        e.confirm_customer_data()
-        servers = e.get_servers()
+        euserv.confirm_customer_data()
+        servers = euserv.get_servers()
         result['servers'] = servers
         if not servers:
-            result['error'] = "无服务器"
+            result['error'] = "未找到任何服务器"
             result['success'] = True
             return result
 
-        # 是否续期所有可续期合同
-        renew_all = os.getenv("RENEW_ALL", "false").lower() == "true"
-        for oid, (can_renew, date) in servers.items():
+        # 只处理第一个可续期合同
+        for order_id, (can_renew, renew_date) in servers.items():
             if can_renew:
-                logger.info(f"⏰ 服务器 {oid} 开始续期")
-                ok = e.renew_server(oid)
-                result['renew_results'].append({
-                    'order_id': oid,
-                    'success': ok,
-                    'message': f"{'✅' if ok else '❌'} 服务器 {oid} 续期{'成功' if ok else '失败'}"
-                })
-                if not renew_all:
-                    break
+                logger.info(f"⏰ 服务器 {order_id} 可以续期")
+                success = euserv.renew_server(order_id)
+                if success:
+                    next_date = (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d")
+                    result['renew_results'].append({
+                        'order_id': order_id,
+                        'success': True,
+                        'message': f"✅ 服务器 {order_id} 续期成功",
+                        'next_renew_date': next_date
+                    })
+                else:
+                    result['renew_results'].append({
+                        'order_id': order_id,
+                        'success': False,
+                        'message': f"❌ 服务器 {order_id} 续期失败",
+                        'next_renew_date': renew_date
+                    })
+                break
         result['success'] = True
     except Exception as e:
+        logger.error(f"处理账号异常: {e}", exc_info=True)
         result['error'] = str(e)
-        logger.exception(f"处理账号 {account.email} 异常")
     return result
 
 
-# ==================== 主函数 ====================
 def main():
     logger.info("=" * 60)
-    logger.info("EUserv 多账号自动续期脚本 (ddddocr 专业版 + 样式化通知)")
+    logger.info("EUserv 多账号自动续期脚本（多线程版本）")
     logger.info(f"执行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"配置账号数: {len(ACCOUNTS)}")
-    logger.info(f"最大并发线程: {GLOBAL_CONFIG.max_workers}")
+    logger.info(f"最大并发: {GLOBAL_CONFIG.max_workers}")
     logger.info("=" * 60)
 
     if not ACCOUNTS:
-        logger.error("❌ 未配置账号，程序退出")
+        logger.error("❌ 未配置账号")
         sys.exit(1)
 
+    all_results = []
     with ThreadPoolExecutor(max_workers=GLOBAL_CONFIG.max_workers) as executor:
-        futures = [executor.submit(process_account, acc, GLOBAL_CONFIG) for acc in ACCOUNTS]
-        results = [f.result() for f in futures]
+        futures = {executor.submit(process_account, acc, GLOBAL_CONFIG): acc for acc in ACCOUNTS}
+        for future in as_completed(futures):
+            acc = futures[future]
+            try:
+                res = future.result()
+                all_results.append(res)
+            except Exception as e:
+                logger.error(f"账号 {acc.email} 处理异常: {e}")
+                all_results.append({'email': acc.email, 'success': False, 'error': str(e)})
 
-    # 生成汇总报告（带样式）
+    # 生成通知消息（汇总样式）
+    tg_lines = [f"<b>🔄 EUserv 多账号续期报告</b>", f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", f"处理账号数: {len(all_results)}", ""]
+    wx_lines = [f"🔄 EUserv 多账号续期报告", f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", f"处理账号数: {len(all_results)}", ""]
+
+    for res in all_results:
+        email = res['email']
+        if not res['success']:
+            err = res.get('error', '未知错误')
+            tg_lines.append(f"<b>❌ 账号: {email}</b>")
+            tg_lines.append(f"   登录失败: {err}")
+            wx_lines.append(f"❌ 账号: {email}")
+            wx_lines.append(f"   登录失败: {err}")
+        elif res.get('renew_results'):
+            tg_lines.append(f"<b>🎉 账号: {email}</b>")
+            tg_lines.append(f"   续期结果:")
+            wx_lines.append(f"🎉 账号: {email}")
+            wx_lines.append(f"   续期结果:")
+            for item in res['renew_results']:
+                tg_lines.append(f"   {item['message']}")
+                wx_lines.append(f"   {item['message']}")
+                if item.get('next_renew_date'):
+                    tg_lines.append(f"         下次续期: {item['next_renew_date']}")
+                    wx_lines.append(f"         下次续期: {item['next_renew_date']}")
+        else:
+            tg_lines.append(f"<b>✅ 账号: {email}</b>")
+            tg_lines.append(f"   所有服务器无需续期")
+            wx_lines.append(f"✅ 账号: {email}")
+            wx_lines.append(f"   所有服务器无需续期")
+            for oid, (_, rdate) in res.get('servers', {}).items():
+                if rdate:
+                    tg_lines.append(f"    订单 {oid}: 可续期日期 {rdate}")
+                    wx_lines.append(f"    订单 {oid}: 可续期日期 {rdate}")
+        tg_lines.append("")
+        wx_lines.append("")
+
+    tg_msg = "\n".join(tg_lines)
+    wx_msg = "\n".join(wx_lines)
+
+    send_telegram(tg_msg, GLOBAL_CONFIG)
+    send_wechat(wx_msg)
+
     logger.info("\n" + "=" * 60)
-    logger.info("处理结果汇总")
-    logger.info("=" * 60)
-
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    message_parts = [f"<b>🔄 EUserv 续期报告 - {now_str}</b>"]
-
-    for result in results:
-        email = result['email']
-        logger.info(f"\n账号: {email}")
-
-        # 选择前缀 Emoji
-        if not result['success']:
-            prefix = "❌"
-        else:
-            if result['renew_results']:
-                all_success = all(r['success'] for r in result['renew_results'])
-                prefix = "✅" if all_success else "⚠️"
-            else:
-                prefix = "ℹ️"
-
-        message_parts.append(f"\n{prefix} <b>📧 账号: {email}</b>")
-
-        if not result['success']:
-            error_msg = result.get('error', '未知错误')
-            logger.error(f"  ❌ 处理失败: {error_msg}")
-            message_parts.append(f"  ❌ 处理失败: {error_msg}")
-            continue
-
-        servers = result.get('servers', {})
-        logger.info(f"  服务器数量: {len(servers)}")
-
-        renew_results = result.get('renew_results', [])
-        if renew_results:
-            logger.info(f"  续期操作: {len(renew_results)} 个")
-            for renew_result in renew_results:
-                logger.info(f"    {renew_result['message']}")
-                message_parts.append(f"  {renew_result['message']}")
-        else:
-            logger.info("  ✓ 无需续期")
-            message_parts.append("  ✓ 无需续期")
-            for order_id, (_, date) in servers.items():
-                if date:
-                    message_parts.append(f"    订单 {order_id}: 可续期日期 {date}")
-
-    full_msg = "\n".join(message_parts)
-    send_notification(full_msg, GLOBAL_CONFIG)
-    logger.info("\n" + full_msg)
-    logger.info("=" * 60)
     logger.info("执行完成")
+    logger.info("=" * 60)
 
 
 if __name__ == "__main__":
