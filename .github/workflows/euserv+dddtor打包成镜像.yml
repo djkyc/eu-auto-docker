@@ -43,7 +43,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           # 镜像名称：ghcr.io/所有者/自定义名称（支持手动输入，默认 euserv-renewer）
-          images: ghcr.io/${{ github.repository_owner }}/${{ github.event.inputs.image_name || 'euserv-renew_dddtor' }}
+          images: ghcr.io/${{ github.repository_owner }}/${{ github.event.inputs.image_name || 'euserv-renew-oem' }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
