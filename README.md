@@ -167,7 +167,21 @@ docker run --rm \
   ghcr.io/djkyc/euserv-tg-wx-diy:latest
 测试无误后，可按需构建自定义镜像。
 
+当你测事没有问题重新打包镜像再在机器上
 
+1. docker pull ghcr.io/djkyc/euserv-tg-wx-diy:latest
+2.如果你想释放磁盘空间，可以在拉取新镜像后执行：
+
+bash
+# 查看所有镜像
+docker images
+# 删除旧的镜像（根据 IMAGE ID 或 REPOSITORY:TAG）
+docker rmi ghcr.io/djkyc/euserv-tg-wx-diy:latest  # 注意：这会删除当前标签的镜像
+# 或
+docker rmi <旧的IMAGE_ID>
+
+3.# 查看所有镜像
+docker images
 
 
 
@@ -208,5 +222,6 @@ MIT License © 2025 [你的名字]
 text
 
                  
+
 
 
